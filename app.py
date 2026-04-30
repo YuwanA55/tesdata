@@ -2,23 +2,30 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from sklearn.cluster import KMeans
-from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.naive_bayes import GaussianNB
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.metrics import accuracy_score, classification_report, confusion_matrix
 import plotly.express as px
+import io, joblib
+from datetime import datetime
+from openpyxl import load_workbook
+from openpyxl.styles import PatternFill
+from openpyxl.chart import BarChart, Reference
 
-st.set_page_config(layout="wide")
-st.title("🎓 Pipeline ML (Validasi Lengkap)")
+# ================= CONFIG =================
+st.set_page_config(page_title="Pipeline Skripsi ML", layout="wide")
+st.title("🎓 Pipeline K-Means + Machine Learning")
+st.caption("Versi Skripsi (Lengkap + Evaluasi Model)")
 
 uploaded_file = st.file_uploader("Upload Excel", type=["xlsx"])
 
 if uploaded_file:
 
     df = pd.read_excel(uploaded_file)
-    st.success(f"Jumlah data: {len(df)}")
+    st.success(f"Data: {len(df)} baris")
 
-    # ================= DETEKSI KOLOM =================
+    # ================= AUTO DETECT =================
     col_map = {}
     for col in df.columns:
         c = col.lower()
@@ -43,7 +50,7 @@ if uploaded_file:
     X = df_clean[['Persentase', 'Waktu']]
     X_scaled = (X - X.min()) / (X.max() - X.min())
 
-    # ================= KMEANS =================
+    # ================= KMEANS AUTO =================
     kmeans = KMeans(n_clusters=3, init='k-means++', random_state=42)
     df_clean['Cluster'] = kmeans.fit_predict(X_scaled)
 
@@ -59,11 +66,11 @@ if uploaded_file:
     df_clean['Label'] = df_clean['Cluster'].map(mapping)
 
     # ================= SPLIT =================
-    X_model = df_clean[['Persentase', 'Waktu']]
-    y_model = df_clean['Label']
+    X_nb = df_clean[['Persentase', 'Waktu']]
+    y_nb = df_clean['Label']
 
     X_train, X_test, y_train, y_test = train_test_split(
-        X_model, y_model, test_size=0.3, stratify=y_model, random_state=42
+        X_nb, y_nb, test_size=0.25, stratify=y_nb, random_state=42
     )
 
     # ================= MODEL =================
@@ -73,54 +80,36 @@ if uploaded_file:
     nb.fit(X_train, y_train)
     dt.fit(X_train, y_train)
 
-    pred_train_nb = nb.predict(X_train)
-    pred_test_nb = nb.predict(X_test)
-
-    pred_train_dt = dt.predict(X_train)
-    pred_test_dt = dt.predict(X_test)
+    pred_nb = nb.predict(X_test)
+    pred_dt = dt.predict(X_test)
 
     # ================= METRICS =================
-    def metrics(y_true, y_pred):
+    def get_metrics(y_true, y_pred):
         report = classification_report(y_true, y_pred, output_dict=True, zero_division=0)
         return {
             "Accuracy": accuracy_score(y_true, y_pred),
             "Precision": report['weighted avg']['precision'],
             "Recall": report['weighted avg']['recall'],
-            "F1": report['weighted avg']['f1-score']
+            "F1-Score": report['weighted avg']['f1-score']
         }
 
-    nb_train = metrics(y_train, pred_train_nb)
-    nb_test = metrics(y_test, pred_test_nb)
-
-    dt_train = metrics(y_train, pred_train_dt)
-    dt_test = metrics(y_test, pred_test_dt)
-
-    # ================= CROSS VALIDATION =================
-    cv_nb = cross_val_score(nb, X_model, y_model, cv=5).mean()
-    cv_dt = cross_val_score(dt, X_model, y_model, cv=5).mean()
-
-    # ================= DETEKSI OVERFITTING =================
-    def status(train, test):
-        if train - test > 0.1:
-            return "⚠ Overfitting"
-        elif test > 0.95:
-            return "⚠ Terlalu sempurna (cek data)"
-        else:
-            return "Normal"
-
-    status_nb = status(nb_train["Accuracy"], nb_test["Accuracy"])
-    status_dt = status(dt_train["Accuracy"], dt_test["Accuracy"])
+    metrics_nb = get_metrics(y_test, pred_nb)
+    metrics_dt = get_metrics(y_test, pred_dt)
 
     # ================= CONFUSION =================
-    cm_nb = pd.DataFrame(confusion_matrix(y_test, pred_test_nb),
-                         index=nb.classes_, columns=nb.classes_)
+    cm_nb = pd.DataFrame(
+        confusion_matrix(y_test, pred_nb, labels=nb.classes_),
+        index=nb.classes_,
+        columns=nb.classes_
+    )
 
-    # ================= NAVBAR =================
-    tab1, tab2, tab3, tab4 = st.tabs([
+    # ================= TABS =================
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "K-Means",
-        "Perbandingan",
+        "Perbandingan Model",
         "📊 Evaluasi Model",
-        "Visualisasi"
+        "Visualisasi",
+        "Prediksi & Export"
     ])
 
     # ===== KMEANS =====
@@ -129,25 +118,29 @@ if uploaded_file:
 
     # ===== PERBANDINGAN =====
     with tab2:
-        comp = pd.DataFrame({
+        comp_df = pd.DataFrame({
             "Model": ["Naive Bayes", "Decision Tree"],
-            "Test Accuracy": [nb_test["Accuracy"], dt_test["Accuracy"]],
-            "Cross Val": [cv_nb, cv_dt],
-            "Status": [status_nb, status_dt]
+            "Accuracy": [metrics_nb["Accuracy"], metrics_dt["Accuracy"]]
         })
-        st.dataframe(comp)
-        st.bar_chart(comp.set_index("Model")[["Test Accuracy", "Cross Val"]])
+        st.dataframe(comp_df)
+        st.bar_chart(comp_df.set_index("Model"))
 
     # ===== EVALUASI =====
     with tab3:
-        st.subheader("Naive Bayes")
-        st.write("Train vs Test")
-        st.write(nb_train, nb_test)
+        st.subheader("Evaluasi Model")
 
-        st.subheader("Decision Tree")
-        st.write(dt_train, dt_test)
+        eval_df = pd.DataFrame({
+            "Metric": ["Accuracy", "Precision", "Recall", "F1-Score"],
+            "Naive Bayes": list(metrics_nb.values()),
+            "Decision Tree": list(metrics_dt.values())
+        })
 
-        st.subheader("Confusion Matrix")
+        st.dataframe(eval_df, use_container_width=True)
+
+        st.subheader("Grafik Evaluasi")
+        st.bar_chart(eval_df.set_index("Metric"))
+
+        st.subheader("Confusion Matrix (Naive Bayes)")
         st.dataframe(cm_nb)
 
     # ===== VISUAL =====
@@ -156,9 +149,108 @@ if uploaded_file:
             X_scaled,
             x='Persentase',
             y='Waktu',
-            color=df_clean['Label']
+            color=df_clean['Label'],
+            title="Clustering"
         )
         st.plotly_chart(fig, use_container_width=True)
 
+    # ===== PREDIKSI =====
+    with tab5:
+
+        st.subheader("Prediksi Manual")
+
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            jml = st.number_input("Jumlah Siswa", 1, 100, 10)
+        with col2:
+            benar = st.number_input("Jumlah Benar", 0, 100, 7)
+        with col3:
+            waktu = st.number_input("Waktu", 0, 300, 45)
+
+        if st.button("Prediksi"):
+            if benar > jml:
+                st.error("Input tidak valid")
+            else:
+                persen = (benar / jml) * 100
+                input_df = pd.DataFrame([[persen, waktu]],
+                                        columns=['Persentase', 'Waktu'])
+
+                hasil = nb.predict(input_df)[0]
+
+                st.info(f"Persentase: {persen:.2f}%")
+                st.success(f"Hasil: {hasil}")
+
+        st.divider()
+
+        # ===== EXPORT EXCEL =====
+        if st.button("Generate Excel Lengkap"):
+
+            output = io.BytesIO()
+
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Input')
+                df_clean.to_excel(writer, sheet_name='KMeans')
+
+                comp_df.to_excel(writer, sheet_name='Perbandingan', index=False)
+                eval_df.to_excel(writer, sheet_name='Evaluasi', index=False)
+                cm_nb.to_excel(writer, sheet_name='Confusion')
+
+            output.seek(0)
+            wb = load_workbook(output)
+
+            # ===== WARNA =====
+            ws = wb['KMeans']
+            fill = {
+                "Mudah": PatternFill(start_color="C6EFCE", fill_type="solid"),
+                "Sedang": PatternFill(start_color="FFEB9C", fill_type="solid"),
+                "Sulit": PatternFill(start_color="FFC7CE", fill_type="solid"),
+            }
+
+            for r in range(2, ws.max_row + 1):
+                val = ws.cell(row=r, column=5).value
+                if val in fill:
+                    ws.cell(row=r, column=5).fill = fill[val]
+
+            # ===== GRAFIK EXCEL =====
+            ws_chart = wb['Perbandingan']
+            chart = BarChart()
+            data = Reference(ws_chart, min_col=2, min_row=1, max_row=3)
+            cats = Reference(ws_chart, min_col=1, min_row=2, max_row=3)
+
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(cats)
+            chart.title = "Perbandingan Model"
+
+            ws_chart.add_chart(chart, "E5")
+
+            # ===== AUTO WIDTH =====
+            for s in wb.sheetnames:
+                ws = wb[s]
+                for col in ws.columns:
+                    max_len = max(len(str(c.value)) if c.value else 0 for c in col)
+                    ws.column_dimensions[col[0].column_letter].width = max_len + 2
+
+            final = io.BytesIO()
+            wb.save(final)
+            final.seek(0)
+
+            st.download_button(
+                "Download Excel",
+                final,
+                file_name=f"skripsi_{datetime.now().strftime('%H%M')}.xlsx"
+            )
+
+            # MODEL
+            buf = io.BytesIO()
+            joblib.dump(nb, buf)
+            buf.seek(0)
+
+            st.download_button(
+                "Download Model NB",
+                buf,
+                file_name="model_nb.pkl"
+            )
+
 else:
-    st.info("Upload file Excel terlebih dahulu")
+    st.info("Upload file Excel dulu")
